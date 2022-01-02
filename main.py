@@ -1,8 +1,11 @@
-import re
-import mutagen
-from mutagen import StreamInfo
+#!/usr/bin/python3
 
-IN_FILE = "Александр Градский - Романс о влюбленных.utf8.cue"
+import re
+import os
+import mutagen
+from mutagen.easyid3 import EasyID3
+
+IN_FILE = "Александр Градский - Романс о влюбленных.wav.utf8.cue"
 DEBUG = True
 
 KEYWORDS = [
@@ -20,6 +23,27 @@ FILE_TYPES = [
 TRACK_TYPE = [
     'AUDIO'
 ]
+
+
+# Transform the string of the form mm:ss:ff (mm - minutes, ss - seconds,
+# ff - frames, 75 frames per second) to the float number of seconds
+def str2sec(time_index):
+    result = 0
+    r1 = time_index.split(":")
+    if len(r1) == 3:
+        result = int(r1[0]) * 60 + int(r1[1]) + (int(r1[2]) + 1)/75
+    result = round(result, 2)
+    return result
+
+
+# Transform the float number of seconds to the string of form mm:ss:ff
+# mm - minutes, ss - seconds, ff - frames (75 frames per second)
+def sec2str(secs):
+    minutes = int(secs // 60)
+    seconds = int((secs % 60) // 1)
+    frames = int((secs % 60) % 1 * 75)
+    result = f'{minutes:02}' + ':' + f'{seconds:02}' + ':' + f'{frames:02}'
+    return result
 
 
 def parse_cue(cue_lines):
@@ -51,7 +75,10 @@ def parse_cue(cue_lines):
             result["FILES"][file_index]["FILE"] = file_name
             result["FILES"][file_index]["TYPE"] = file_type
             result["FILES"][file_index]["TRACKS"] = dict()
-            #result["FILES"][file_index]["LENGTH"] = file_audio_length
+
+            # ... total length of the file
+            obj_in_file = mutagen.File(file_name)
+            result["FILES"][file_index]["LENGTH"] = round(obj_in_file.info.length, 2)
 
             # ... and proceed to collect the tracks
             while i < length and not cue_lines[i].strip().upper().startswith("FILE"):
@@ -86,44 +113,26 @@ def parse_cue(cue_lines):
                         elif line.upper().startswith("INDEX"):
                             track_index = line.split()[2]
 
-                result["FILES"][file_index]["TRACKS"][track_id] = dict()
-                result["FILES"][file_index]["TRACKS"][track_id]["TITLE"] = track_title
-                result["FILES"][file_index]["TRACKS"][track_id]["PERFORMER"] = track_performer
-                result["FILES"][file_index]["TRACKS"][track_id]["INDEX"] = track_index
-                result["FILES"][file_index]["TRACKS"][track_id]["TYPE"] = track_type
+                    result["FILES"][file_index]["TRACKS"][track_id] = dict()
+                    result["FILES"][file_index]["TRACKS"][track_id]["TITLE"] = track_title
+                    result["FILES"][file_index]["TRACKS"][track_id]["PERFORMER"] = track_performer
+                    result["FILES"][file_index]["TRACKS"][track_id]["INDEX"] = track_index
+                    result["FILES"][file_index]["TRACKS"][track_id]["TYPE"] = track_type
 
         else:
             result[line[:line.find(" ")]] = re.findall(r'\"(.+?)\"', line[line.find(" ") + 1:])[0]
 
+    # calculate the length of each track
+    disk_track_counter = 0
+    for file_id, file in result['FILES'].items():
+        for track_id, track in file['TRACKS'].items():
+            disk_track_counter = disk_track_counter + 1
+            if disk_track_counter + 1 in file['TRACKS']: # the tracks must be numbered consecutively
+                track_length = sec2str(str2sec(file['TRACKS'][disk_track_counter + 1]['INDEX']) - str2sec(track['INDEX']))
+            else:
+                track_length = sec2str(file['LENGTH'] - str2sec(track['INDEX']))
+            track["LENGTH"] = track_length
 
-
-
-
-            # if key in KEYWORDS:
-            #
-            #     if key == "FILE":
-            #
-            #         if "FILES" not in al:
-            #             al["FILES"] = {}
-            #         cur_file_index = len(al["FILES"])
-            #         al["FILES"][cur_file_index] = {}
-            #         al["FILES"][cur_file_index]["FILE"] = re.findall(r'\"(.+?)\"', value)[0]
-            #         file_type = value.split()[-1]
-            #         if file_type in FILE_TYPES:
-            #             al["FILES"][cur_file_index]["TYPE"] = file_type
-            #         else:
-            #             al["FILES"][cur_file_index]["TYPE"] = "Unknown file type"
-            #         al["FILES"][cur_file_index]["TRACKS"] = {}
-            #
-            #     elif key == "TRACK":
-            #         track_values = value.split()
-            #         cur_track_index = int(track_values[1])
-            #
-            #     elif key == "PERFORMER":
-            #         al[key] = re.findall(r'\"(.+?)\"', value)[0]
-            #
-            #     else:
-            #         al[key] = re.findall(r'\"(.+?)\"', value)[0]
     return result
 
 
@@ -131,7 +140,26 @@ with open(IN_FILE, 'r') as in_file:
     lines = in_file.readlines()
 
 album = parse_cue(lines)
-
 print(album)
+
+for file_id, file in album['FILES'].items():
+    in_file_name = file['FILE']
+    for track_id, track in file['TRACKS'].items():
+        out_file_name = f'{track_id:02}. ' + track['TITLE'] + '.mp3'
+
+        cmd = 'ffmpeg ' + \
+              '-ss ' + str(str2sec(track['INDEX'])) + ' '\
+              '-t ' + str(str2sec(track['LENGTH'])) + ' '\
+              '-i "' + in_file_name + '" ' + \
+              '-codec:a libmp3lame -b:a 320k ' + \
+              '"' + out_file_name + '"'
+        print(cmd)
+        os.system(cmd)
+        
+        obj_mp3_tags = EasyID3(out_file_name)
+        obj_mp3_tags['album'] = album['TITLE']
+        obj_mp3_tags['artist'] = track['PERFORMER']
+        obj_mp3_tags['title'] = track['TITLE']
+        obj_mp3_tags.save()
 
 
